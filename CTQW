@@ -1,0 +1,488 @@
+# FILE: run_ctqw.py
+import os
+import json
+import csv
+import time
+import math
+import numpy as np
+import pennylane as qml
+import random
+from collections import deque
+from scipy.linalg import expm
+
+# --- 全局配置 ---
+ROOT_PATH = r'C:\Users\59415\Desktop\Pioneer RI\Research\Code'
+DATASETS_PATH = os.path.join(ROOT_PATH, 'datasets')
+RESULTS_PATH = os.path.join(ROOT_PATH, 'results')
+ALGORITHM_NAME = 'CTQW'
+MAX_STEPS = 100  # 最大时间步（t 以整数步循环）
+SHOTS = 10000  # 搜索模式的采样次数
+MAX_QUBITS = 15  # 限制以避免内存问题
+EPSILON = 1e-10  # 概率阈值用于判断节点被"访问"
+
+def extract_structure_params(graph_data):
+    """提取结构参数（与DTQW相同）"""
+    graph_id = graph_data.get('graph_id', '').lower()
+    structure_info = {}
+    if 'branch' in graph_id and 'height' in graph_id:
+        parts = graph_id.split('_')
+        for part in parts:
+            if part.startswith('branch'):
+                structure_info['branch'] = int(part.replace('branch', ''))
+            elif part.startswith('height'):
+                structure_info['height'] = int(part.replace('height', ''))
+    elif 'grid' in graph_id:
+        parts = graph_id.replace('grid_', '').split('_')
+        for part in parts:
+            if 'x' in part:
+                try:
+                    dims = part.split('x')
+                    structure_info['rows'] = int(dims[0])
+                    structure_info['cols'] = int(dims[1])
+                except:
+                    pass
+    elif 'hypercube' in graph_id:
+        parts = graph_id.split('_')
+        for part in parts:
+            if part.startswith('dim'):
+                structure_info['dimension'] = int(part.replace('dim', ''))
+    return structure_info
+
+def get_target_node(neighbors, graph_id, structure_type):
+    """获取合适的目标节点（与DTQW相同）"""
+    num_nodes = len(neighbors)
+    if structure_type == 'Tree':
+        # 寻找叶子节点
+        for node in range(num_nodes - 1, -1, -1):
+            if len(neighbors[node]) == 1 and node != 0:  # 叶子节点但不是根
+                return node
+        return num_nodes - 1
+    elif structure_type == 'Grid':
+        return num_nodes - 1  # 对角最远点
+    elif structure_type == 'Hypercube':
+        return num_nodes - 1  # 相对顶点
+    else:
+        # SmallWorld, GluedTree
+        return fast_farthest_node(neighbors, 0)
+
+def fast_farthest_node(neighbors, start_node):
+    """快速BFS找最远节点（与DTQW相同）"""
+    if not neighbors: return 0
+    visited = {start_node}
+    queue = [(start_node, 0)]
+    farthest_node = start_node
+    max_depth = 0
+    head = 0
+    while head < len(queue):
+        node, depth = queue[head]
+        head += 1
+        if depth > max_depth:
+            max_depth = depth
+            farthest_node = node
+        if depth > 8: continue
+        for neighbor in neighbors[node]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append((neighbor, depth + 1))
+    return farthest_node
+
+def calculate_graph_diameter(neighbors, start_node, target_node):
+    """使用BFS计算从start到target的距离（作为直径估计，与DTQW相同）"""
+    if not neighbors: return 1
+    visited = set()
+    queue = deque([(start_node, 0)])
+    visited.add(start_node)
+    while queue:
+        node, dist = queue.popleft()
+        if node == target_node:
+            return dist
+        for neighbor in neighbors[node]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append((neighbor, dist + 1))
+    return 1  # fallback if not connected
+
+def calculate_correct_theoretical_steps(graph_data, structure_type, metric_type="hitting_time"):
+    """
+    基于CTQW理论的准确时间 t 计算（浮点，单位时间步）
+    - hitting_time:  (π/2) * sqrt(N) (正确的CTQW搜索时间)
+    - cover_time: N * log(N) (approximate upper bound)
+    """
+    num_nodes = len(graph_data['neighbors'])
+    structure_info = extract_structure_params(graph_data)
+    if num_nodes <= 1:
+        return 1.0
+    if metric_type == "hitting_time":
+        # 正确的CTQW搜索时间：(π/2) * sqrt(N)
+        theoretical_t = (math.pi / 2) * math.sqrt(num_nodes)
+        print(f"        Theory t = (pi/2) * sqrt({num_nodes}) ≈ {theoretical_t:.2f}")
+    else:  # cover_time
+        theoretical_t = 0
+    return max(theoretical_t, 1.0)
+
+# 1. 修正的哈密顿量构建
+def build_hamiltonian(num_nodes, neighbors, is_search=False, target_node=None):
+    """
+    构建CTQW的哈密顿量矩阵 H (N x N)
+    - 覆盖模式: H = -A (负邻接矩阵，标准CTQW)
+    - 搜索模式: H = -A - ω|target><target| (添加Oracle项)
+    """
+    # 构建邻接矩阵（确保对称性）
+    A = np.zeros((num_nodes, num_nodes), dtype=complex)
+    for i in range(num_nodes):
+        for j in neighbors[i]:
+            A[i, j] = 1.0  # 无向图，对称
+            A[j, i] = 1.0  # 确保对称
+    
+    # 基础哈密顿量：H = -A（标准CTQW形式）
+    H = -A
+    
+    if is_search and target_node is not None:
+        # 搜索模式：添加Oracle项 H = -A - ω|target><target|
+        # 动态调整Oracle强度：基于图的平均度数
+        avg_degree = np.sum(A) / (2 * num_nodes)  # 每条边被计算两次
+        oracle_strength = max(1.0, avg_degree)  # 至少为1，随连通性增加
+        H[target_node, target_node] -= oracle_strength
+        print(f"        添加Oracle项到节点 {target_node}，强度: {oracle_strength:.2f} (平均度数: {avg_degree:.2f})")
+    
+    return H
+
+def pad_hamiltonian(H, num_qubits):
+    """
+    将 N x N 的 H 填充到 2^q x 2^q (q = num_qubits)，无效状态无自环（对角0）
+    """
+    dim = 1 << num_qubits
+    H_pad = np.zeros((dim, dim), dtype=complex)
+    N = H.shape[0]
+    H_pad[:N, :N] = H
+    return H_pad
+
+# 2. PennyLane量子电路定义
+def create_ctqw_circuit(
+        neighbors,
+        target_t,
+        start_node,
+        num_pos_qubits,
+        target_node=None,
+        with_shots: bool = False,
+        is_search: bool = False,
+):
+    """
+    构建CTQW电路
+    - 初始化: 搜索模式用均匀叠加；覆盖模式用本地化状态
+    - 演化: U(t) = exp(-i H t)，使用 QubitUnitary (expm)
+    - 测量: 仅位置比特的样本或概率
+    """
+    num_nodes = len(neighbors)
+    if num_nodes == 0:
+        raise ValueError("Graph has no nodes.")
+    total_qubits = num_pos_qubits
+    pos_qubits = list(range(total_qubits))
+    
+    # 构建哈密顿量并填充
+    H = build_hamiltonian(num_nodes, neighbors, is_search=is_search, target_node=target_node)
+    H_pad = pad_hamiltonian(H, total_qubits)
+    
+    # 时间演化算子 U(t) = exp(-i H t)
+    U_t = expm(-1j * H_pad * target_t)
+    
+    # 检查数值稳定性
+    if np.any(np.isnan(U_t)) or np.any(np.isinf(U_t)):
+        print(f"        警告：时间演化算子包含NaN或Inf值，t={target_t}")
+        U_t = np.eye(H_pad.shape[0], dtype=complex)  # 回退到单位矩阵
+    
+    dev = qml.device("lightning.qubit", wires=total_qubits, shots=SHOTS if with_shots else None)
+    
+    @qml.qnode(dev)
+    def ctqw_circuit():
+        # ========== 修正的初始化 ==========
+        if is_search:
+            # 搜索模式: 均匀叠加所有有效节点状态
+            for q in pos_qubits:
+                qml.Hadamard(wires=q)
+            
+            # 如果节点数不是2的幂，需要归一化调整
+            if num_nodes < (1 << num_pos_qubits):
+                print(f"        搜索模式：均匀叠加 {num_nodes} 个有效节点状态")
+        else:
+            # 覆盖模式: 本地化在 start_node
+            # 使用大端序编码：最高位对应 qubit[0]
+            bin_start = bin(start_node)[2:].zfill(num_pos_qubits)
+            for i in range(num_pos_qubits):
+                if bin_start[i] == '1':  # 大端序：bin_start[0] 对应最高位
+                    qml.PauliX(wires=pos_qubits[i])
+            print(f"        覆盖模式：初始化节点 {start_node} (二进制: {bin_start})")
+        
+        # ========== CTQW EVOLUTION ==========
+        qml.QubitUnitary(U_t, wires=pos_qubits)
+        
+        # ========== MEASUREMENT ==========
+        if with_shots:
+            return qml.sample(wires=pos_qubits)
+        else:
+            return qml.probs(wires=pos_qubits)
+    
+    return ctqw_circuit
+
+def calculate_coverage_steps(
+    neighbors,
+    start_node,
+    theoretical_cover_t,
+    num_pos_qubits,
+    repetitions: int = 10,
+):
+    """
+    运行覆盖模式CTQW（无标记），重复repetitions次。
+    每次从t=1递增，直到至少90%节点概率 > EPSILON。
+    返回平均最小t和平均wall-clock时间。
+    """
+    num_nodes = len(neighbors)
+    if num_nodes == 0:
+        return 1.0, 0.0
+    target_cnt = int(np.ceil(num_nodes * 0.9))
+    t_list = []
+    time_list = []
+    for rep in range(repetitions):
+        visited = set()
+        start = time.time()
+        found = False
+        for steps in range(1, MAX_STEPS + 1):
+            t = float(steps)  # t = steps (离散化)
+            try:
+                circ = create_ctqw_circuit(
+                    neighbors,
+                    t,
+                    start_node,
+                    num_pos_qubits,
+                    target_node=None,
+                    with_shots=False,
+                    is_search=False,
+                )
+                prob_vec = circ()[:num_nodes]  # 截断填充
+                newly = {i for i, p in enumerate(prob_vec) if p > EPSILON}
+                visited.update(newly)
+                if len(visited) >= target_cnt:
+                    t_list.append(t)
+                    found = True
+                    break
+            except Exception as exc:
+                print(f"        Coverage t {t} failed (rep {rep+1}): {exc}")
+                continue
+        elapsed = time.time() - start
+        time_list.append(elapsed)
+        if not found:
+            t_list.append(float(MAX_STEPS))
+            print(f"        Rep {rep+1}: coverage not reached within {MAX_STEPS} steps.")
+    avg_t = float(np.mean(t_list))
+    avg_time = float(np.mean(time_list))
+    print(f"        Coverage avg t over {repetitions} runs: {avg_t:.2f}")
+    print(f"        Coverage avg time over {repetitions} runs: {avg_time:.3f}s")
+    return avg_t, avg_time
+
+def calculate_search_probability(
+    neighbors,
+    start_node,
+    target_node,
+    theoretical_t,
+    num_pos_qubits,
+):
+    """
+    运行搜索模式CTQW（标记目标），扫描理论时间附近的时间点找到最优搜索概率。
+    返回(最大击中概率, wall-clock运行时间, 最优时间)。
+    """
+    try:
+        t0 = time.time()
+        
+        # 时间扫描范围：理论时间的 ±20%，分5个点
+        time_points = [
+            theoretical_t * 0.8,
+            theoretical_t * 0.9,
+            theoretical_t,
+            theoretical_t * 1.1,
+            theoretical_t * 1.2
+        ]
+        
+        best_prob = 0.0
+        best_time = theoretical_t
+        best_hits = 0
+        best_valid_size = 0
+        
+        for t in time_points:
+            circ = create_ctqw_circuit(
+                neighbors,
+                t,
+                start_node,
+                num_pos_qubits,
+                target_node=target_node,
+                with_shots=True,
+                is_search=True,
+            )
+            # shape = (shots, num_pos_qubits)
+            samples = circ()
+            
+            # 修正：使用大端序解码样本到节点索引
+            bits = samples.astype(int)
+            # 大端序：最高位权重最大
+            powers = 2 ** np.arange(num_pos_qubits - 1, -1, -1)
+            node_idx = bits @ powers  # (shots,)
+            
+            # 过滤有效样本 (position < N)
+            valid_mask = node_idx < len(neighbors)
+            valid_idx = node_idx[valid_mask]
+            
+            # 计算击中概率 (仅有效样本)
+            if valid_idx.size > 0:
+                hits = np.count_nonzero(valid_idx == target_node)
+                prob = hits / valid_idx.size
+                
+                if prob > best_prob:
+                    best_prob = prob
+                    best_time = t
+                    best_hits = hits
+                    best_valid_size = valid_idx.size
+        
+        runtime = time.time() - t0
+        
+        print(f"        搜索概率 (hits/valid): {best_hits}/{best_valid_size} = {best_prob:.4f}")
+        print(f"        目标节点: {target_node}, 最优时间: {best_time:.2f} (理论: {theoretical_t:.2f})")
+        return float(best_prob), float(runtime), float(best_time)
+    except Exception as exc:
+        print(f"Search probability calculation failed: {exc}")
+        return 0.0, 0.1, theoretical_t
+
+def run_trials_for_graph(graph_data, structure_type):
+    """
+    对于单个图：
+    - 计算理论击中/覆盖时间 t
+    - 运行覆盖10次 → 平均 t & 平均时间
+    - 运行搜索一次 (SHOTS) 在理论击中 t 下
+    返回元组 (coverage_steps, coverage_time, search_probability, avg_runtime, search_steps)
+    """
+    graph_id = graph_data.get("graph_id", "unknown")
+    neighbors = graph_data["neighbors"]
+    start_node = graph_data.get("start_node", 0)
+    target_node = graph_data.get("target_node")
+    if target_node is None:
+        target_node = get_target_node(neighbors, graph_id, structure_type)
+    num_nodes = len(neighbors)
+    
+    print(f"        图信息: {graph_id}, 节点数: {num_nodes}, 起始: {start_node}, 目标: {target_node}")
+    
+    # ------------------- QUBIT COUNTS -------------------
+    num_pos_qubits = max(1, (num_nodes - 1).bit_length())
+    total_qubits = num_pos_qubits
+    
+    print(f"        量子比特数: {num_pos_qubits} (位置)")
+    # ------------------- FALLBACK FOR HUGE GRAPHS -------------------
+    if total_qubits > MAX_QUBITS or (1 << num_pos_qubits) > 1e6:
+        print(f"      ⚠️ Too many qubits ({total_qubits}) – using ONLY theoretical values.")
+        theory_hit = calculate_correct_theoretical_steps(graph_data, "hitting_time")
+        theory_cov = calculate_correct_theoretical_steps(graph_data, "cover_time")
+        return (theory_cov, 0.0, 0.0, 0.0, theory_hit )
+    # ------------------- THEORETICAL TIME -------------------
+    theory_hit = calculate_correct_theoretical_steps(graph_data, "hitting_time")
+    theory_cov = calculate_correct_theoretical_steps(graph_data, "cover_time")
+    # ------------------- COVERAGE (10× average) -------------------
+    coverage_t, coverage_time = calculate_coverage_steps(
+        neighbors,
+        start_node,
+        theory_cov,
+        num_pos_qubits,
+        repetitions=10,
+    )
+    # ------------------- SEARCH (single run, SHOTS) -------------------
+    search_prob, search_time, optimal_time = calculate_search_probability(
+        neighbors,
+        start_node,
+        target_node,
+        theory_hit,
+        num_pos_qubits,
+    )
+    print(f"      📊 Final Results:")
+    print(f"          Coverage → avg {coverage_t:.2f} t (theory {theory_cov:.2f})")
+    print(f"          Search    → prob {search_prob:.4f} at {optimal_time:.2f} t (time {search_time:.3f}s)")
+    return ( round(coverage_t, 2), float(coverage_time), float(search_prob), float(search_time), round(optimal_time, 2) )
+
+# 3. 模拟执行与可视化（结果保存为CSV，无额外可视化，按框架）
+def main():
+    """主函数（与DTQW相同）"""
+    algo_results_path = os.path.join(RESULTS_PATH, f'results-{ALGORITHM_NAME}')
+    os.makedirs(algo_results_path, exist_ok=True)
+    structure_types = ['Tree', 'Grid', 'SmallWorld', 'GluedTree', 'Hypercube']
+    all_results = []
+    total_start_time = time.time()
+    for struct_type in structure_types:
+        print(f"\n{'=' * 80}")
+        print(f"📐 Processing Structure Type: {struct_type}")
+        print(f"{'=' * 80}")
+        dataset_dir = os.path.join(DATASETS_PATH, f'datasets-{struct_type.lower()}s')
+        dataset_file = os.path.join(dataset_dir, f'{struct_type.lower()}s_all_variants_quantum.json')
+        if not os.path.exists(dataset_file):
+            print(f"❌ Dataset not found for {struct_type}: {dataset_file}")
+            continue
+        try:
+            with open(dataset_file, 'r') as f:
+                all_graphs_data = json.load(f)
+            if not isinstance(all_graphs_data, list):
+                all_graphs_data = [all_graphs_data]
+            print(f"📈 Found {len(all_graphs_data)} graphs for {struct_type}.")
+            for idx, graph_data in enumerate(all_graphs_data):
+                print(f"\n📊 Processing Graph {idx + 1}/{len(all_graphs_data)}: {graph_data.get('graph_id', 'N/A')}")
+                try:
+                    if 'neighbors' not in graph_data or not graph_data['neighbors']:
+                        print("  Skipping graph with no neighbors.")
+                        continue
+                    if 'start_node' not in graph_data:
+                        graph_data['start_node'] = 0
+                    if 'target_node' not in graph_data:
+                        graph_data['target_node'] = get_target_node(
+                            graph_data['neighbors'], graph_data.get('graph_id', ''), struct_type
+                        )
+                    # 运行分析
+                    coverage_steps, coverage_time, search_probability, search_time, search_steps = run_trials_for_graph(
+                        graph_data, struct_type
+                    )
+                    # 构建结果记录
+                    result = {
+                        '数据名称': graph_data.get('graph_id', f'{struct_type}_{idx}'),
+                        '类型': struct_type,
+                        'coverage_steps': coverage_steps,
+                        'coverage_time': coverage_time,
+                        'search_probability': search_probability,
+                        'search_time': search_time,
+                        'search_steps': search_steps
+                    }
+                    all_results.append(result)
+                except Exception as e:
+                    print(f"  ❌ Critical error processing graph {graph_data.get('graph_id', 'N/A')}: {e}")
+        except Exception as e:
+            print(f"❌ Fatal error loading or processing dataset for {struct_type}: {e}")
+    # 保存结果
+    if all_results:
+        output_file = os.path.join(algo_results_path, 'CTQW_Analysis_Results.csv')
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=['数据名称', '类型', 'coverage_steps', 'coverage_time', 'search_probability', 'search_time', 'search_steps'])
+                writer.writeheader()
+                writer.writerows(all_results)
+            total_time = time.time() - total_start_time
+            print(f"\n🎉 CTQW ANALYSIS COMPLETED!")
+            print(f"⏱️  Total time: {total_time:.1f}s")
+            print(f"📁 Results saved to: {output_file}")
+            print(f"📊 Processed {len(all_results)} graphs total")
+            # 显示关键统计
+            if all_results:
+                avg_search_prob = np.mean([r['search_probability'] for r in all_results])
+                high_prob_count = sum(1 for r in all_results if r['search_probability'] > 0.1)
+                print(f"\n📈 Key Statistics:")
+                print(f"   Average Search Probability: {avg_search_prob:.4f}")
+                print(f"   Graphs with >10% search probability: {high_prob_count}/{len(all_results)}")
+        except Exception as e:
+            print(f"❌ Error saving results to CSV: {e}")
+    else:
+        print(f"❌ No results generated!")
+
+if __name__ == '__main__':
+    random.seed(42)
+    np.random.seed(42)
+    main()

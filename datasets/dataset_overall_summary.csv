@@ -1,0 +1,6 @@
+Type,Count,Filenames
+Tree,14,"trees_001_branch2_height2, trees_002_branch2_height3, trees_003_branch2_height4..."
+Grid,18,"grids_015_size3_density0.0, grids_016_size3_density0.2, grids_017_size3_density0.4..."
+SmallWorld,18,"smallworlds_033_n10_p0.1, smallworlds_034_n10_p0.3, smallworlds_035_n10_p0.6..."
+GluedTree,6,"gluedtrees_051_height3_glues2, gluedtrees_052_height3_glues4, gluedtrees_053_height4_glues2..."
+Hypercube,8,"hypercubes_057_dim3_perturb0.0, hypercubes_058_dim3_perturb0.1, hypercubes_059_dim4_perturb0.0..."
