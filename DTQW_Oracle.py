@@ -119,7 +119,7 @@ def calculate_correct_theoretical_steps(graph_data, structure_type, metric_type=
         dimension = structure_info.get('dimension', int(np.log2(num_nodes))) if num_nodes > 0 else 0
         if dimension > 0:
             if metric_type == "hitting_time":
-                theoretical_steps = int(round(math.pi / 4 * math.sqrt(num_nodes)))
+                theoretical_steps = int(math.ceil(math.pi / 4 * math.sqrt(num_nodes)))
                 print(f"        Theory steps = round(pi/4 * sqrt({num_nodes})) ≈ {theoretical_steps}")
             else:  # cover_time
                 theoretical_steps = int(np.ceil(num_nodes * np.log(max(num_nodes, 2))))

@@ -178,17 +178,18 @@ def build_shift_unitary(num_nodes, neighbors, num_pos_qubits, num_coin_qubits):
     """构建 shift 操作的 unitary 置换矩阵"""
     total_qubits = num_pos_qubits + num_coin_qubits
     dim = 1 << total_qubits
-    
+
     if total_qubits > MAX_QUBITS:
         raise ValueError(f"Too many qubits ({total_qubits} > {MAX_QUBITS}), cannot build matrix.")
-    
+
     perm = [0] * dim
-    coin_mask = (1 << num_coin_qubits) - 1
-    
+    pos_mask = (1 << num_pos_qubits) - 1
+
     for state in range(dim):
-        pos = state >> num_coin_qubits
-        coin = state & coin_mask
-        
+        # 采用 |coin> ⊗ |pos> 的张量顺序：coin 为高位，pos 为低位
+        pos = state & pos_mask
+        coin = state >> num_pos_qubits
+
         if pos < num_nodes:
             neigh_list = neighbors[pos]
             deg = len(neigh_list)
@@ -201,14 +202,15 @@ def build_shift_unitary(num_nodes, neighbors, num_pos_qubits, num_coin_qubits):
         else:
             w = pos
             d_prime = coin  # 无效节点自循环
-        
-        new_state = (w << num_coin_qubits) | d_prime
+
+        # 在 |coin> ⊗ |pos> 顺序下，新状态索引为 (d_prime << num_pos_qubits) | w
+        new_state = (d_prime << num_pos_qubits) | w
         perm[state] = new_state
-    
+
     U = np.zeros((dim, dim), dtype=complex)
     for i in range(dim):
         U[perm[i], i] = 1.0
-    
+
     return U
 
 def create_dtqw_circuit(
@@ -231,13 +233,14 @@ def create_dtqw_circuit(
     num_nodes = len(neighbors)
     if num_nodes == 0:
         raise ValueError("Graph has no nodes.")
-    
+
     total_qubits = num_pos_qubits + num_coin_qubits
-    pos_qubits = list(range(num_pos_qubits))
-    coin_qubits = list(range(num_pos_qubits, total_qubits))
-    
+    # 采用 |coin> ⊗ |pos> 的寄存器顺序：coin 在前，pos 在后
+    coin_qubits = list(range(num_coin_qubits))
+    pos_qubits = list(range(num_coin_qubits, total_qubits))
+
     dev = qml.device("lightning.qubit", wires=total_qubits, shots=SHOTS if with_shots else None)
-    
+
     @qml.qnode(dev)
     def dtqw_circuit():
         # ========== INITIALIZATION ==========
@@ -246,20 +249,20 @@ def create_dtqw_circuit(
         for i in range(num_pos_qubits):
             if bin_start[i] == '1':
                 qml.PauliX(wires=pos_qubits[i])
-        
+
         # 初始化硬币寄存器（均匀叠加）
         for q in coin_qubits:
             qml.Hadamard(wires=q)
-        
+
         # ========== DTQW EVOLUTION ==========
         for step in range(target_steps):
             # ----- 硬币操作：Hadamard门 -----
             for q in coin_qubits:
                 qml.Hadamard(wires=q)
-            
+
             # ----- SHIFT OPERATOR -----
             qml.QubitUnitary(shift_U, wires=range(total_qubits))
-        
+
         # ========== MEASUREMENT ==========
         if with_shots:
             # 只测量位置量子比特
@@ -267,7 +270,7 @@ def create_dtqw_circuit(
         else:
             # 返回位置上的概率分布
             return qml.probs(wires=pos_qubits)
-    
+
     return dtqw_circuit
 
 def calculate_coverage_steps(
