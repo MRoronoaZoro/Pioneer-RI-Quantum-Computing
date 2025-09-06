@@ -100,6 +100,16 @@ for dirpath, dirnames, filenames in os.walk(ROOT):
         elif status == 'tokenize-error':
             errors.append(path)
 
+
+extra_candidates = [os.path.join(ROOT, 'CTQW')]
+for candidate in extra_candidates:
+    if os.path.isfile(candidate):
+        changed, status = strip_comments_preserve_func_docstrings(candidate)
+        if changed and candidate not in changed_files:
+            changed_files.append(candidate)
+        elif status == 'tokenize-error' and candidate not in errors:
+            errors.append(candidate)
+
 print('Changed:', len(changed_files))
 for p in changed_files:
     print(p)
