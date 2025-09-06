@@ -1,4 +1,4 @@
-# FILE: run_dtqw_correct_theory.py
+
 import os
 import json
 import csv
@@ -8,15 +8,15 @@ import numpy as np
 import pennylane as qml
 import random
 from collections import deque
-# --- 全局配置 ---
+
 ROOT_PATH = r'C:\Users\59415\Desktop\Pioneer RI\Research\Code'
 DATASETS_PATH = os.path.join(ROOT_PATH, 'datasets')
 RESULTS_PATH = os.path.join(ROOT_PATH, 'results')
 ALGORITHM_NAME = 'DTQW_Correct_Theory'
-MAX_STEPS = 100  # 增加以覆盖更多
-SHOTS = 10000  # 增加以提高采样准确性
-MAX_QUBITS = 15  # 限制以避免内存问题
-EPSILON = 1e-10  # 概率阈值用于判断节点被"访问"
+MAX_STEPS = 100
+SHOTS = 10000
+MAX_QUBITS = 15
+EPSILON = 1e-10
 def extract_structure_params(graph_data):
     """提取结构参数"""
     graph_id = graph_data.get('graph_id', '').lower()
@@ -48,17 +48,17 @@ def get_target_node(neighbors, graph_id, structure_type):
     """获取合适的目标节点"""
     num_nodes = len(neighbors)
     if structure_type == 'Tree':
-        # 寻找叶子节点
+
         for node in range(num_nodes - 1, -1, -1):
-            if len(neighbors[node]) == 1 and node != 0:  # 叶子节点但不是根
+            if len(neighbors[node]) == 1 and node != 0:
                 return node
         return num_nodes - 1
     elif structure_type == 'Grid':
-        return num_nodes - 1  # 对角最远点
+        return num_nodes - 1
     elif structure_type == 'Hypercube':
-        return num_nodes - 1  # 相对顶点
+        return num_nodes - 1
     else:
-        # SmallWorld, GluedTree
+
         return fast_farthest_node(neighbors, 0)
 def fast_farthest_node(neighbors, start_node):
     """快速BFS找最远节点"""
@@ -94,7 +94,7 @@ def calculate_graph_diameter(neighbors, start_node, target_node):
             if neighbor not in visited:
                 visited.add(neighbor)
                 queue.append((neighbor, dist + 1))
-    return 1  # fallback if not connected
+    return 1
 def calculate_correct_theoretical_steps(graph_data, structure_type, metric_type="hitting_time"):
     """
     基于量子随机游走理论的准确步数计算
@@ -105,14 +105,14 @@ def calculate_correct_theoretical_steps(graph_data, structure_type, metric_type=
         if metric_type == "hitting_time":
             theoretical_steps = int(math.ceil(math.sqrt(num_nodes)))
             print(f"        Theory steps = ceil(√{num_nodes}) ≈ {theoretical_steps}")
-        else:  # cover_time
+        else:
             theoretical_steps = int(np.ceil(num_nodes * np.log(max(num_nodes, 2))))
         return max(theoretical_steps, 1)
     elif structure_type == 'Grid':
         if metric_type == "hitting_time":
             theoretical_steps = int(math.ceil(math.sqrt(num_nodes)))
             print(f"        Theory steps = ceil(√{num_nodes}) ≈ {theoretical_steps}")
-        else:  # cover_time
+        else:
             theoretical_steps = int(np.ceil(num_nodes * np.log(max(num_nodes, 2))))
         return max(theoretical_steps, 1)
     elif structure_type == 'Hypercube':
@@ -121,7 +121,7 @@ def calculate_correct_theoretical_steps(graph_data, structure_type, metric_type=
             if metric_type == "hitting_time":
                 theoretical_steps = int(math.ceil(math.pi / 4 * math.sqrt(num_nodes)))
                 print(f"        Theory steps = round(pi/4 * sqrt({num_nodes})) ≈ {theoretical_steps}")
-            else:  # cover_time
+            else:
                 theoretical_steps = int(np.ceil(num_nodes * np.log(max(num_nodes, 2))))
             return max(theoretical_steps, 1)
         else:
@@ -130,17 +130,17 @@ def calculate_correct_theoretical_steps(graph_data, structure_type, metric_type=
         if metric_type == "hitting_time":
             theoretical_steps = int(math.ceil(math.sqrt(num_nodes)))
             print(f"        Theory steps = ceil(√{num_nodes}) ≈ {theoretical_steps}")
-        else:  # cover_time
+        else:
             theoretical_steps = int(np.ceil(num_nodes * np.log(max(num_nodes, 2))))
         return max(theoretical_steps, 1)
     elif structure_type == 'GluedTree':
         if metric_type == "hitting_time":
             theoretical_steps = int(math.ceil(math.sqrt(num_nodes)))
             print(f"        Theory steps = ceil(√{num_nodes}) ≈ {theoretical_steps}")
-        else:  # cover_time
+        else:
             theoretical_steps = int(np.ceil(num_nodes))
         return max(theoretical_steps, 1)
-    else: # Generic case
+    else:
         if metric_type == "hitting_time":
             theoretical_steps = int(math.ceil(math.sqrt(num_nodes)))
             print(f"        Theory steps = ceil(√{num_nodes}) ≈ {theoretical_steps}")
@@ -163,13 +163,13 @@ def build_shift_unitary(num_nodes, neighbors, num_pos_qubits, num_coin_qubits):
             deg = len(neigh_list)
             if coin < deg:
                 w = neigh_list[coin]
-                d_prime = next((i for i, n in enumerate(neighbors[w]) if n == pos), coin)  # 反向币标签，fallback to coin
+                d_prime = next((i for i, n in enumerate(neighbors[w]) if n == pos), coin)
             else:
                 w = pos
-                d_prime = coin  # 自循环
+                d_prime = coin
         else:
             w = pos
-            d_prime = coin  # 无效节点自循环
+            d_prime = coin
         new_state = (w << num_coin_qubits) | d_prime
         perm[state] = new_state
     U = np.zeros((dim, dim), dtype=complex)
@@ -203,59 +203,59 @@ def create_dtqw_circuit(
     dev = qml.device("lightning.qubit", wires=total_qubits, shots=SHOTS if with_shots else None)
     @qml.qnode(dev)
     def dtqw_circuit():
-        # ========== INITIALIZATION ==========
+
         if target_node is not None:
-            # Search mode: uniform superposition over positions
+
             for q in pos_qubits:
                 qml.Hadamard(wires=q)
         else:
-            # Coverage mode: localized at start_node
+
             bin_start = bin(start_node)[2:].zfill(num_pos_qubits)
             for i in range(num_pos_qubits):
                 if bin_start[i] == '1':
                     qml.PauliX(wires=pos_qubits[i])
-        # Initialize coin register (always uniform)
+
         for q in coin_qubits:
             qml.Hadamard(wires=q)
-        # ========== DTQW EVOLUTION ==========
+
         for step in range(target_steps):
-            # ----- SEARCH MODE: Oracle + Diffusion -----
+
             if target_node is not None and num_coin_qubits > 0:
-                # === ORACLE: Mark the target state ===
-                # Step 1: Flip X gates to map target to |00...0>
+
+
                 bin_target = bin(target_node)[2:].zfill(num_pos_qubits)
                 flipped_bits = []
                 for i in range(num_pos_qubits):
                     if bin_target[i] == '1':
                         qml.PauliX(wires=pos_qubits[i])
                         flipped_bits.append(i)
-                # Step 2: Apply controlled phase flip
-                # Use multi-controlled Z on first coin qubit
+
+
                 if num_pos_qubits > 0:
                     qml.ctrl(
                         qml.PauliZ,
                         control=pos_qubits,
                         control_values=[0] * num_pos_qubits
                     )(wires=coin_qubits[0])
-                # Step 3: Restore X gates
+
                 for i in flipped_bits:
                     qml.PauliX(wires=pos_qubits[i])
-                # === DIFFUSION: Grover operator on ENTIRE space ===
-                # This is the critical fix - must include both position AND coin
+
+
                 all_qubits = pos_qubits + coin_qubits
                 qml.templates.GroverOperator(wires=all_qubits)
-            # ----- COVERAGE MODE: Just Hadamard coin -----
+
             else:
                 for q in coin_qubits:
                     qml.Hadamard(wires=q)
-            # ----- SHIFT OPERATOR -----
+
             qml.QubitUnitary(shift_U, wires=range(total_qubits))
-        # ========== MEASUREMENT ==========
+
         if with_shots:
-            # Only measure position qubits (critical for correct decoding)
+
             return qml.sample(wires=pos_qubits)
         else:
-            # Return probability distribution over positions
+
             return qml.probs(wires=pos_qubits)
     return dtqw_circuit
 def calculate_coverage_steps(
@@ -293,10 +293,10 @@ def calculate_coverage_steps(
                     shift_U,
                     num_pos_qubits,
                     num_coin_qubits,
-                    target_node=None,          # no oracle
+                    target_node=None,
                     with_shots=False,
                 )
-                prob_vec = circ()[:num_nodes]          # truncate padding
+                prob_vec = circ()[:num_nodes]
                 newly = {i for i, p in enumerate(prob_vec) if p > EPSILON}
                 visited.update(newly)
                 if len(visited) >= target_cnt:
@@ -347,32 +347,32 @@ def calculate_search_probability(
             target_node=target_node,
             with_shots=True,
         )
-        # shape = (shots, num_pos_qubits)   (only position bits)
+
         samples = circ()
         runtime = time.perf_counter() - t0
-        # -------------------------------------------------
-        # decode binary rows → integer node index
-        # -------------------------------------------------
+
+
+
         bits = samples.astype(int)
         powers = 2 ** np.arange(num_pos_qubits - 1, -1, -1)
-        node_idx = bits @ powers               # (shots,)
-        # -------------------------------------------------
-        # discard "leak" samples (position >= N)
-        # -------------------------------------------------
+        node_idx = bits @ powers
+
+
+
         valid_mask = node_idx < len(neighbors)
         valid_idx  = node_idx[valid_mask]
-        # -------------------------------------------------
-        # compute hit probability over *valid* samples
-        # -------------------------------------------------
+
+
+
         if valid_idx.size == 0:
             prob = 0.0
             hits = 0
         else:
             hits = np.count_nonzero(valid_idx == target_node)
-            prob = hits / valid_idx.size    # **correct denominator**
+            prob = hits / valid_idx.size
         print(f"Search probability (hits/valid): {hits}/{valid_idx.size} = {prob:.4f}")
         return float(prob), float(runtime)
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:
         print(f"Search probability calculation failed: {exc}")
         return 0.0, 0.1
 def run_trials_for_graph(graph_data, structure_type):
@@ -393,12 +393,12 @@ def run_trials_for_graph(graph_data, structure_type):
     if target_node is None:
         target_node = get_target_node(neighbors, graph_id, structure_type)
     num_nodes = len(neighbors)
-    # ------------------- QUBIT COUNTS -------------------
+
     num_pos_qubits = max(1, (num_nodes - 1).bit_length())
     max_deg = max((len(l) for l in neighbors), default=1)
     num_coin_qubits = max(1, (max_deg - 1).bit_length())
     total_qubits = num_pos_qubits + num_coin_qubits
-    # ------------------- FALLBACK FOR HUGE GRAPHS -------------------
+
     if total_qubits > MAX_QUBITS or (1 << num_pos_qubits) > 1e6:
         print(
             f"      ⚠️ Too many qubits ({total_qubits}) – using ONLY theoretical values."
@@ -410,13 +410,13 @@ def run_trials_for_graph(graph_data, structure_type):
             graph_data, structure_type, "cover_time"
         )
         return (
-            int(theory_cov),      # we cannot measure coverage → use theory
-            0.0,                  # no runtime measured
-            0.0,                  # no search executed
-            0.0,                  # no runtime measured
-            int(theory_hit),      # theoretical hitting steps
+            int(theory_cov),
+            0.0,
+            0.0,
+            0.0,
+            int(theory_hit),
         )
-    # ------------------- BUILD SHIFT UNITARY -------------------
+
     try:
         shift_U = build_shift_unitary(
             num_nodes, neighbors, num_pos_qubits, num_coin_qubits
@@ -436,14 +436,14 @@ def run_trials_for_graph(graph_data, structure_type):
             0.0,
             int(theory_hit),
         )
-    # ------------------- THEORETICAL STEP COUNTS -------------------
+
     theory_hit = calculate_correct_theoretical_steps(
         graph_data, structure_type, "hitting_time"
     )
     theory_cov = calculate_correct_theoretical_steps(
         graph_data, structure_type, "cover_time"
     )
-    # ------------------- COVERAGE (10× average) -------------------
+
     coverage_steps, coverage_time = calculate_coverage_steps(
         neighbors,
         start_node,
@@ -453,7 +453,7 @@ def run_trials_for_graph(graph_data, structure_type):
         num_coin_qubits,
         repetitions=10,
     )
-    # ------------------- SEARCH (single run, 1000 shots) -------------------
+
     search_prob, search_time = calculate_search_probability(
         neighbors,
         start_node,
@@ -470,15 +470,15 @@ def run_trials_for_graph(graph_data, structure_type):
     print(
         f"          Search    → prob {search_prob:.4f} at {theory_hit} steps (time {search_time:.3f}s)"
     )
-    # -------------------------------------------------------------
-    # Return values in the order expected by the CSV writer
-    # -------------------------------------------------------------
+
+
+
     return (
-        int(round(coverage_steps)),   # average coverage steps (rounded to int)
-        float(coverage_time),         # average coverage time [s]
-        float(search_prob),           # search probability
-        float(search_time),           # runtime of the single search run [s]
-        int(theory_hit),              # theoretical hitting steps
+        int(round(coverage_steps)),
+        float(coverage_time),
+        float(search_prob),
+        float(search_time),
+        int(theory_hit),
     )
 def main():
     """主函数"""
@@ -514,11 +514,11 @@ def main():
                         graph_data['target_node'] = get_target_node(
                             graph_data['neighbors'], graph_data.get('graph_id', ''), struct_type
                         )
-                    # 运行分析
+
                     coverage_steps, coverage_time, search_probability, search_time, search_steps = run_trials_for_graph(
                         graph_data, struct_type
                     )
-                    # 构建结果记录
+
                     result = {
                         '数据名称': graph_data.get('graph_id', f'{struct_type}_{idx}'),
                         '类型': struct_type,
@@ -533,7 +533,7 @@ def main():
                     print(f"  ❌ Critical error processing graph {graph_data.get('graph_id', 'N/A')}: {e}")
         except Exception as e:
             print(f"❌ Fatal error loading or processing dataset for {struct_type}: {e}")
-    # 保存结果
+
     if all_results:
         output_file = os.path.join(algo_results_path, 'DTQW_Analysis_Results_Fixed.csv')
         try:
@@ -546,7 +546,7 @@ def main():
             print(f"⏱️  Total time: {total_time:.1f}s")
             print(f"📁 Results saved to: {output_file}")
             print(f"📊 Processed {len(all_results)} graphs total")
-            # 显示关键统计
+
             if all_results:
                 avg_search_prob = np.mean([r['search_probability'] for r in all_results])
                 high_prob_count = sum(1 for r in all_results if r['search_probability'] > 0.1)

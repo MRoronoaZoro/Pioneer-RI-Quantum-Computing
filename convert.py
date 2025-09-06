@@ -1,4 +1,4 @@
-# FILE: preprocess_quantum_datasets_minimal.py
+
 import os
 import json
 import numpy as np
@@ -49,7 +49,7 @@ def get_glued_tree_target_node(G):
     target_tree = tree2_nodes if 0 in tree1_nodes else tree1_nodes
     G_target = G.subgraph(target_tree)
 
-    # 找目标树的中心节点
+
     central_node = min(target_tree, key=lambda n: nx.eccentricity(G_target, n))
     return central_node
 
@@ -95,19 +95,19 @@ def preprocess_single_graph(graph_data, structure_type):
     data = graph_data.copy()
     data['structure_type'] = structure_type
 
-    # 构建图
+
     G = nx.from_numpy_array(np.array(data['adj_matrix']))
 
-    # 处理树邻居顺序
+
     if structure_type == 'Tree' and nx.is_connected(G) and nx.is_tree(G):
         data['neighbors'] = fix_tree_neighbors_ordering(G)
     else:
         data['neighbors'] = [list(G.neighbors(i)) for i in range(len(G.nodes))]
 
-    # 设置目标节点
+
     data['target_node'] = determine_target_node(G, structure_type, data)
 
-    # 添加量子信息
+
     data['quantum_info'] = {
         'qubits': calculate_qubit_requirements(G, structure_type, data),
         'num_position_qubits': max(1, int(math.ceil(math.log2(G.number_of_nodes())))),
@@ -122,7 +122,7 @@ def main():
         dataset_dir = os.path.join(ROOT_PATH, f'datasets-{struct_type.lower()}s')
         if not os.path.exists(dataset_dir): continue
 
-        # 处理所有JSON文件
+
         for filename in os.listdir(dataset_dir):
             if not filename.endswith('.json') or '_quantum' in filename:
                 continue
@@ -132,14 +132,14 @@ def main():
             with open(filepath, 'r') as f:
                 data = json.load(f)
 
-            # 处理单个图或图列表
+
             results = (
                 [preprocess_single_graph(g, struct_type) for g in data]
                 if isinstance(data, list)
                 else [preprocess_single_graph(data, struct_type)]
             )
 
-            # 保存结果
+
             output_path = filepath.replace('.json', '_quantum.json')
             with open(output_path, 'w') as f:
                 json.dump(results[0] if len(results) == 1 else results, f, indent=2)
